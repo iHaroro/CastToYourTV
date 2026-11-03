@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CastToYourTV</string>
+    <string name="waiting_title">等待投屏…</string>
+    <string name="waiting_hint">在手机/电脑的投屏或 AirPlay 列表中选择本设备</string>
+    <string name="status_ready">接收服务已启动</string>
+    <string name="status_stopped">接收服务已停止</string>
+</resources>

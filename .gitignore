@@ -1,0 +1,21 @@
+# Android 构建产物
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+local.properties
+
+# 本地 SDK / 工具链（体积大，不入库）
+android-sdk/
+gradle-8.7/
+gradle-8.7-bin.zip
+cmdline-tools.zip
+tools/platform-tools/
+tools/platform-tools.zip
+
+# 参考项目（逆向/协议分析用，非本项目代码）
+analysis/
+
+# 对拍测试编译产物
+tools/playfair_diff/out/

@@ -23,6 +23,9 @@ public final class AudioSession {
     private String artist;
     private String album;
     private byte[] artwork; // JPEG/PNG 原始字节
+    private String clientName;  // 连接设备名，如「涛的 iPhone」
+    private String clientModel; // 设备型号，如 iPhone14,3
+    private String clientIp;
     private float volumeDb = -20f;
     private long startedAtMs; // RECORD 时打点，用于「已播放时长」
     private boolean playing;
@@ -44,6 +47,9 @@ public final class AudioSession {
         artist = null;
         album = null;
         artwork = null;
+        clientName = null;
+        clientModel = null;
+        clientIp = null;
         notifyChanged();
     }
 
@@ -76,12 +82,27 @@ public final class AudioSession {
         notifyChanged();
     }
 
+    public synchronized void setClient(String name, String model, String ip) {
+        if (java.util.Objects.equals(name, clientName)
+                && java.util.Objects.equals(model, clientModel)
+                && java.util.Objects.equals(ip, clientIp)) {
+            return;
+        }
+        if (name != null) clientName = name;
+        if (model != null) clientModel = model;
+        if (ip != null) clientIp = ip;
+        notifyChanged();
+    }
+
     public synchronized boolean isPlaying() { return playing; }
     public synchronized String getTitle() { return title; }
     public synchronized String getArtist() { return artist; }
     public synchronized String getAlbum() { return album; }
     public synchronized byte[] getArtwork() { return artwork; }
     public synchronized float getVolumeDb() { return volumeDb; }
+    public synchronized String getClientName() { return clientName; }
+    public synchronized String getClientModel() { return clientModel; }
+    public synchronized String getClientIp() { return clientIp; }
 
     public synchronized long getElapsedMs() {
         return playing ? System.currentTimeMillis() - startedAtMs : 0;

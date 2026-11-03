@@ -33,6 +33,7 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
     private TextView artistView;
     private TextView timeView;
     private TextView volumeView;
+    private TextView deviceView;
     private View pulseDot;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -126,6 +127,16 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
         volumeView.setLayoutParams(volLp);
         column.addView(volumeView);
 
+        // 当前连接设备
+        deviceView = new TextView(this);
+        deviceView.setTextColor(0xFF555566);
+        deviceView.setTextSize(13);
+        LinearLayout.LayoutParams devLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        devLp.topMargin = dp(16);
+        deviceView.setLayoutParams(devLp);
+        column.addView(deviceView);
+
         // 底部「正在播放」指示点（呼吸动画占位）
         pulseDot = new View(this);
         GradientDrawable dot = new GradientDrawable();
@@ -186,6 +197,19 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
         float db = s.getVolumeDb();
         volumeView.setText(db <= -144f ? "音量：静音"
                 : String.format("音量：%.0f dB", db));
+
+        String cn = s.getClientName();
+        String cm = s.getClientModel();
+        String ci = s.getClientIp();
+        StringBuilder dev = new StringBuilder("连接设备：");
+        if (cn != null) {
+            dev.append(cn);
+        } else {
+            dev.append("AirPlay 设备");
+        }
+        if (cm != null) dev.append("（").append(cm).append("）");
+        if (ci != null) dev.append(" · ").append(ci);
+        deviceView.setText(dev.toString());
 
         updateTime();
     }

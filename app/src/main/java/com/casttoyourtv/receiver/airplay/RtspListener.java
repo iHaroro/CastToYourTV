@@ -228,6 +228,13 @@ public class RtspListener {
                 }
                 Log.i(TAG, "SETUP1: aeskey derived");
 
+                // iPhone 在 SETUP1 带 name/model，展示到播放页
+                Object nameObj = root.get("name");
+                Object modelObj = root.get("model");
+                if (nameObj instanceof String || modelObj instanceof String) {
+                    AudioSession.get().setClient(strVal(nameObj), strVal(modelObj), clientIp);
+                }
+
                 Object eivObj = root.get("eiv");
                 if (eivObj instanceof byte[]) {
                     p.eiv = (byte[]) eivObj;

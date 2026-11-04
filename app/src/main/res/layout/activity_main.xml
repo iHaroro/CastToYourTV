@@ -35,6 +35,38 @@
         android:textColor="#AAAAAA"
         android:textSize="18sp" />
 
+    <LinearLayout
+        android:id="@+id/castCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/cast_card_bg"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvActiveCast"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textColor="#FFFFFFFF"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btnResumeCast"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:backgroundTint="@color/accent"
+            android:minWidth="220dp"
+            android:text="返回播放器"
+            android:textAllCaps="false"
+            android:textColor="#FF000000"
+            android:textSize="18sp" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"

@@ -11,9 +11,12 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * AirPlay RTSP/HTTP 监听（7000 端口）。
@@ -42,6 +45,8 @@ public class RtspListener {
     private volatile boolean running;
     private ServerSocket server;
     private Thread thread;
+    private final Set<Socket> activeClients =
+            Collections.newSetFromMap(new ConcurrentHashMap<Socket, Boolean>());
 
     public RtspListener(int port, CastSession.Callback callback, Context ctx, String deviceName) {
         this.port = port;
@@ -82,6 +87,7 @@ public class RtspListener {
             server = new ServerSocket(port);
             while (running) {
                 Socket client = server.accept();
+                activeClients.add(client);
                 new Thread(() -> handle(client), "raop-client").start();
             }
         } catch (Exception e) {
@@ -188,6 +194,7 @@ public class RtspListener {
         AudioSession.get().onStop();
         callback.onMirrorStop();
         callback.onAudioStop();
+        activeClients.remove(client);
     }
 
     /**
@@ -464,12 +471,13 @@ public class RtspListener {
         return new byte[0];
     }
 
-    /** SET_PARAMETER：音量（text）+ 曲目信息/封面（plist 或图片），转发给 AudioSession */
+    /** SET_PARAMETER：音量（text）+ 曲目信息/封面（DMAP、plist 或图片），转发给 AudioSession */
     private void handleSetParameter(Map<String, String> headers, byte[] body, PairingState p) {
         String ct = headers.get("content-type");
         if (ct == null) return;
+        String contentType = ct.toLowerCase(Locale.US);
 
-        if (ct.startsWith("text/parameters")) {
+        if (contentType.startsWith("text/parameters")) {
             String text = new String(body, StandardCharsets.ISO_8859_1).trim();
             if (text.startsWith("volume:")) {
                 try {
@@ -484,15 +492,50 @@ public class RtspListener {
             return;
         }
 
+        // Apple Music / iOS 音乐投放使用 DMAP 标签树，而不是 binary plist
+        if (contentType.startsWith("application/x-dmap-tagged")) {
+            try {
+                Map<String, byte[]> tags = DmapReader.read(body);
+                String title = DmapReader.text(tags, "minm");
+                String artist = DmapReader.text(tags, "asar");
+                String album = DmapReader.text(tags, "asal");
+                String lyrics = DmapReader.text(tags, "asly");
+                long durationMs = DmapReader.uint32(tags, "astm");
+                long trackId = DmapReader.uint64(tags, "mper");
+                if (title != null || artist != null || album != null
+                        || lyrics != null || durationMs > 0) {
+                    AudioSession.get().setTrackInfo(
+                            title, artist, album, lyrics, durationMs, trackId);
+                    Log.i(TAG, "dmap track: " + title + " / " + artist + " / " + album
+                            + " duration=" + durationMs + " tags=" + tags.keySet());
+                } else {
+                    Log.i(TAG, "dmap metadata without supported text tags: " + tags.keySet());
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "dmap parse failed: " + e.getMessage());
+            }
+            return;
+        }
+
         // 曲目信息：iPhone 音乐投放时发 application/x-apple-binary-plist
-        if (ct.contains("binary-plist")) {
+        if (contentType.contains("binary-plist")) {
             try {
                 Map<String, Object> params = BplistReader.readDict(body);
-                String title = strVal(params.get("itemName"));
-                String artist = strVal(params.get("artist"));
-                String album = strVal(params.get("album"));
-                if (title != null || artist != null || album != null) {
-                    AudioSession.get().setTrack(title, artist, album);
+                String title = firstString(params, "itemName", "title",
+                        "kMRMediaRemoteNowPlayingInfoTitle");
+                String artist = firstString(params, "artist", "artistName",
+                        "kMRMediaRemoteNowPlayingInfoArtist");
+                String album = firstString(params, "album", "albumName",
+                        "kMRMediaRemoteNowPlayingInfoAlbum");
+                String lyrics = firstString(params, "lyrics", "lyric",
+                        "kMRMediaRemoteNowPlayingInfoLyrics");
+                long durationMs = firstLong(params, "duration", "durationMs",
+                        "kMRMediaRemoteNowPlayingInfoDuration");
+                if (durationMs > 0 && durationMs < 10000) durationMs *= 1000;
+                if (title != null || artist != null || album != null
+                        || lyrics != null || durationMs > 0) {
+                    AudioSession.get().setTrackInfo(
+                            title, artist, album, lyrics, durationMs, 0);
                     Log.i(TAG, "track: " + title + " / " + artist + " / " + album);
                 }
             } catch (Exception e) {
@@ -502,7 +545,7 @@ public class RtspListener {
         }
 
         // 专辑封面：image/jpeg 或 image/png
-        if (ct.startsWith("image/")) {
+        if (contentType.startsWith("image/")) {
             AudioSession.get().setArtwork(body);
             Log.i(TAG, "artwork: " + body.length + " bytes (" + ct + ")");
         }
@@ -510,6 +553,25 @@ public class RtspListener {
 
     private static String strVal(Object o) {
         return o instanceof String ? (String) o : null;
+    }
+
+    private static String firstString(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            String value = strVal(values.get(key));
+            if (value != null && !value.trim().isEmpty()) return value.trim();
+        }
+        return null;
+    }
+
+    private static long firstLong(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value instanceof Number) {
+                long number = ((Number) value).longValue();
+                if (number > 0) return number;
+            }
+        }
+        return 0;
     }
 
     /** AES-CTR 流式包装：CTR 是流密码，多次 crypt 要保持同一 Cipher 实例才有连续流 */
@@ -565,6 +627,18 @@ public class RtspListener {
 
     public void stop() {
         running = false;
+        closeActiveClients();
         try { if (server != null) server.close(); } catch (Exception ignored) { }
+    }
+
+    /** 结束当前 AirPlay 会话，但不停止 RTSP 监听，接收服务仍可被重新连接。 */
+    public void closeActiveClients() {
+        for (Socket client : activeClients) {
+            try {
+                client.close();
+            } catch (Exception ignored) {
+            }
+        }
+        activeClients.clear();
     }
 }

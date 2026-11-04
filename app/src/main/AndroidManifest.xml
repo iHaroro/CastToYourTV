@@ -53,6 +53,8 @@
             android:name=".player.PlayerActivity"
             android:exported="false"
             android:launchMode="singleTask"
+            android:taskAffinity="com.casttoyourtv.receiver.player"
+            android:excludeFromRecents="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:theme="@style/Theme.CastToYourTv.Fullscreen" />
@@ -62,6 +64,8 @@
             android:name=".player.MirrorActivity"
             android:exported="false"
             android:launchMode="singleTask"
+            android:taskAffinity="com.casttoyourtv.receiver.player"
+            android:excludeFromRecents="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:theme="@style/Theme.CastToYourTv.Fullscreen" />
@@ -71,6 +75,8 @@
             android:name=".player.AudioPlayerActivity"
             android:exported="false"
             android:launchMode="singleTask"
+            android:taskAffinity="com.casttoyourtv.receiver.player"
+            android:excludeFromRecents="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:theme="@style/Theme.CastToYourTv.Fullscreen" />

@@ -44,4 +44,9 @@ public class AirPlayServer {
         if (advertiser != null) advertiser.stop();
         if (listener != null) listener.stop();
     }
+
+    /** 关闭当前镜像/音频连接，保留发现和监听。 */
+    public void stopActiveSessions() {
+        if (listener != null) listener.closeActiveClients();
+    }
 }

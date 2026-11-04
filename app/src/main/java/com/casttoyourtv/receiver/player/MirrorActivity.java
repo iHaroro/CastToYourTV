@@ -1,6 +1,7 @@
 package com.casttoyourtv.receiver.player;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
@@ -15,6 +16,7 @@ import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
+import com.casttoyourtv.receiver.CastService;
 import com.casttoyourtv.receiver.airplay.MirrorSession;
 
 import java.nio.ByteBuffer;
@@ -33,10 +35,15 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
     private volatile boolean running;
     private Thread decodeThread;
     private MediaCodec codec;
+    private android.app.Dialog controlPanel;
 
     public static void finishInstance() {
         MirrorActivity a = instance;
         if (a != null) a.finish();
+    }
+
+    public static boolean isAlive() {
+        return instance != null;
     }
 
     @Override
@@ -108,6 +115,7 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
                 if (frame == null) {
                     if (!MirrorSession.get().isStreaming()) {
                         // 流已停，退出页面
+                        CastService.notifyMirrorEnded();
                         runOnUiThread(this::finish);
                         break;
                     }
@@ -175,6 +183,24 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
             }
             decodeThread = null;
         }
+    }
+
+    @Override
+    public void onBackPressed() {
+        showControlPanel();
+    }
+
+    private void showControlPanel() {
+        if (controlPanel != null && controlPanel.isShowing()) return;
+        controlPanel = PlayerControlPanel.show(this, this::endCast);
+    }
+
+    private void endCast() {
+        CastService.stopActiveCast(this);
+        Intent i = new Intent(this, com.casttoyourtv.receiver.MainActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(i);
+        finish();
     }
 
     @Override

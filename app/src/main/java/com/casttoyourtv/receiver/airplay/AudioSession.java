@@ -22,6 +22,9 @@ public final class AudioSession {
     private String title;
     private String artist;
     private String album;
+    private String lyrics;
+    private long durationMs;
+    private long trackId;
     private byte[] artwork; // JPEG/PNG 原始字节
     private String clientName;  // 连接设备名，如「涛的 iPhone」
     private String clientModel; // 设备型号，如 iPhone14,3
@@ -46,6 +49,9 @@ public final class AudioSession {
         title = null;
         artist = null;
         album = null;
+        lyrics = null;
+        durationMs = 0;
+        trackId = 0;
         artwork = null;
         clientName = null;
         clientModel = null;
@@ -59,16 +65,46 @@ public final class AudioSession {
     }
 
     public synchronized void setTrack(String title, String artist, String album) {
-        // 同一首歌重复推送时不触发刷新，避免界面闪烁
-        if (java.util.Objects.equals(title, this.title)
-                && java.util.Objects.equals(artist, this.artist)
-                && java.util.Objects.equals(album, this.album)) {
-            return;
+        setTrackInfo(title, artist, album, null, 0, 0);
+    }
+
+    public synchronized void setTrackInfo(String title, String artist, String album,
+                                          String lyrics, long durationMs, long trackId) {
+        boolean titleChanged = title != null && !title.equals(this.title);
+        boolean idChanged = trackId != 0 && this.trackId != 0 && trackId != this.trackId;
+        boolean newTrack = titleChanged || idChanged;
+        boolean changed = newTrack;
+
+        if (newTrack) {
+            this.title = null;
+            this.artist = null;
+            this.album = null;
+            this.lyrics = null;
+            this.durationMs = 0;
+            startedAtMs = System.currentTimeMillis();
         }
-        if (title != null) this.title = title;
-        if (artist != null) this.artist = artist;
-        if (album != null) this.album = album;
-        notifyChanged();
+        if (title != null && !title.equals(this.title)) {
+            this.title = title;
+            changed = true;
+        }
+        if (artist != null && !artist.equals(this.artist)) {
+            this.artist = artist;
+            changed = true;
+        }
+        if (album != null && !album.equals(this.album)) {
+            this.album = album;
+            changed = true;
+        }
+        if (lyrics != null && !lyrics.equals(this.lyrics)) {
+            this.lyrics = lyrics;
+            changed = true;
+        }
+        if (durationMs > 0 && durationMs != this.durationMs) {
+            this.durationMs = durationMs;
+            changed = true;
+        }
+        if (trackId != 0) this.trackId = trackId;
+        if (changed) notifyChanged();
     }
 
     public synchronized void setArtwork(byte[] data) {
@@ -98,6 +134,8 @@ public final class AudioSession {
     public synchronized String getTitle() { return title; }
     public synchronized String getArtist() { return artist; }
     public synchronized String getAlbum() { return album; }
+    public synchronized String getLyrics() { return lyrics; }
+    public synchronized long getDurationMs() { return durationMs; }
     public synchronized byte[] getArtwork() { return artwork; }
     public synchronized float getVolumeDb() { return volumeDb; }
     public synchronized String getClientName() { return clientName; }

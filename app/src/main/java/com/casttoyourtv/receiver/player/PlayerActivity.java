@@ -1,6 +1,7 @@
 package com.casttoyourtv.receiver.player;
 
 import android.os.Bundle;
+import android.content.Intent;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
@@ -18,6 +19,7 @@ import androidx.media3.common.VideoSize;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 
+import com.casttoyourtv.receiver.CastService;
 import com.casttoyourtv.receiver.R;
 
 /**
@@ -52,9 +54,14 @@ public class PlayerActivity extends AppCompatActivity implements SurfaceHolder.C
     private boolean surfaceReady;
     private float videoAspect;      // 视频像素宽高比（已换算像素比与旋转），0 表示未知
     private ResizeMode resizeMode = ResizeMode.FIT;
+    private android.app.Dialog controlPanel;
 
     public static void finishInstance() {
         if (instance != null) instance.finish();
+    }
+
+    public static boolean isAlive() {
+        return instance != null;
     }
 
     /** 快进到指定毫秒（直播流忽略） */
@@ -246,6 +253,7 @@ public class PlayerActivity extends AppCompatActivity implements SurfaceHolder.C
                 if (playbackState == Player.STATE_READY) {
                     overlay.postDelayed(() -> overlay.setVisibility(View.GONE), 3000);
                 } else if (playbackState == Player.STATE_ENDED) {
+                    CastService.notifyVideoEnded();
                     finish();
                 }
             }
@@ -315,13 +323,36 @@ public class PlayerActivity extends AppCompatActivity implements SurfaceHolder.C
     protected void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        url = intent.getStringExtra(EXTRA_URL);
+        String newUrl = intent.getStringExtra(EXTRA_URL);
+        if (newUrl == null || newUrl.isEmpty()) {
+            Log.i(TAG, "onNewIntent without url, keep current playback");
+            return;
+        }
+        url = newUrl;
         title = intent.getStringExtra(EXTRA_TITLE);
         overlay.setText(title != null ? title : "");
         overlay.setVisibility(View.VISIBLE);
         overlay.postDelayed(() -> overlay.setVisibility(View.GONE), 4000);
         Log.i(TAG, "onNewIntent url=" + url);
         playUrl();
+    }
+
+    @Override
+    public void onBackPressed() {
+        showControlPanel();
+    }
+
+    private void showControlPanel() {
+        if (controlPanel != null && controlPanel.isShowing()) return;
+        controlPanel = PlayerControlPanel.show(this, this::endCast);
+    }
+
+    private void endCast() {
+        CastService.stopActiveCast(this);
+        Intent i = new Intent(this, com.casttoyourtv.receiver.MainActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(i);
+        finish();
     }
 
     @Override

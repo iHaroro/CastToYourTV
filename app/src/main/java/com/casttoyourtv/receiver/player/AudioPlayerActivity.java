@@ -1,6 +1,7 @@
 package com.casttoyourtv.receiver.player;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -18,6 +19,7 @@ import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
+import com.casttoyourtv.receiver.CastService;
 import com.casttoyourtv.receiver.airplay.AudioSession;
 
 /**
@@ -31,10 +33,12 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
     private ImageView artworkView;
     private TextView titleView;
     private TextView artistView;
+    private TextView lyricsView;
     private TextView timeView;
     private TextView volumeView;
     private TextView deviceView;
     private View pulseDot;
+    private android.app.Dialog controlPanel;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable ticker = new Runnable() {
@@ -48,6 +52,10 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
     public static void finishInstance() {
         AudioPlayerActivity a = instance;
         if (a != null) a.finish();
+    }
+
+    public static boolean isAlive() {
+        return instance != null;
     }
 
     @Override
@@ -106,6 +114,20 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
         artistLp.topMargin = dp(12);
         artistView.setLayoutParams(artistLp);
         column.addView(artistView);
+
+        // 歌词（仅当源端确实下发 asly/lyrics 时显示）
+        lyricsView = new TextView(this);
+        lyricsView.setTextColor(0xFFCCCCCC);
+        lyricsView.setTextSize(17);
+        lyricsView.setGravity(Gravity.CENTER);
+        lyricsView.setMaxLines(4);
+        lyricsView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        lyricsView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams lyricsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lyricsLp.topMargin = dp(16);
+        lyricsView.setLayoutParams(lyricsLp);
+        column.addView(lyricsView);
 
         // 已播时长（协议拿不到总时长，只显示已播放多久）
         timeView = new TextView(this);
@@ -182,6 +204,15 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
         }
         artistView.setText(sub.length() > 0 ? sub.toString() : "AirPlay 音乐");
 
+        String lyrics = s.getLyrics();
+        if (lyrics != null && !lyrics.isEmpty()) {
+            lyricsView.setText(lyrics);
+            lyricsView.setVisibility(View.VISIBLE);
+        } else {
+            lyricsView.setText("");
+            lyricsView.setVisibility(View.GONE);
+        }
+
         byte[] art = s.getArtwork();
         if (art != null) {
             Bitmap bmp = BitmapFactory.decodeByteArray(art, 0, art.length);
@@ -216,12 +247,38 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
 
     private void updateTime() {
         long ms = AudioSession.get().getElapsedMs();
+        long totalMs = AudioSession.get().getDurationMs();
         long totalSec = ms / 1000;
-        timeView.setText(String.format("已播放 %d:%02d", totalSec / 60, totalSec % 60));
+        if (totalMs > 0) {
+            long durationSec = totalMs / 1000;
+            timeView.setText(String.format("已播放 %d:%02d / %d:%02d",
+                    totalSec / 60, totalSec % 60,
+                    durationSec / 60, durationSec % 60));
+        } else {
+            timeView.setText(String.format("已播放 %d:%02d", totalSec / 60, totalSec % 60));
+        }
     }
 
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    @Override
+    public void onBackPressed() {
+        showControlPanel();
+    }
+
+    private void showControlPanel() {
+        if (controlPanel != null && controlPanel.isShowing()) return;
+        controlPanel = PlayerControlPanel.show(this, this::endCast);
+    }
+
+    private void endCast() {
+        CastService.stopActiveCast(this);
+        Intent i = new Intent(this, com.casttoyourtv.receiver.MainActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(i);
+        finish();
     }
 
     @Override

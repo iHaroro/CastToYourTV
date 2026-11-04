@@ -190,7 +190,6 @@ public class RtspListener {
         if (pairing.mirror != null) pairing.mirror.stop();
         if (pairing.audio != null) pairing.audio.stop();
         if (pairing.audioRenderer != null) pairing.audioRenderer.stop();
-        MirrorSession.get().onStreamStopped();
         AudioSession.get().onStop();
         callback.onMirrorStop();
         callback.onAudioStop();
@@ -284,7 +283,8 @@ public class RtspListener {
                                 .put("type", Bplist.i64(110))
                                 .put("dataPort", Bplist.i64(p.mirror.getPort()));
                         respStreams.add(s);
-                        Log.i(TAG, "SETUP2: mirror dataPort=" + p.mirror.getPort() + " scid=" + scid);
+                        Log.i(TAG, "SETUP2: mirror dataPort=" + p.mirror.getPort()
+                                + " scid=" + Long.toUnsignedString(scid));
                         callback.onMirrorStart();
                     } catch (Exception e) {
                         Log.e(TAG, "SETUP2 failed", e);

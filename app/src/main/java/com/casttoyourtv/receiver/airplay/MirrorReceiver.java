@@ -27,6 +27,7 @@ public class MirrorReceiver {
     private ServerSocket server;
     private Thread thread;
     private int port = -1;
+    private int sessionId;
 
     private byte[] videoKey;
     private byte[] videoIv;
@@ -36,19 +37,23 @@ public class MirrorReceiver {
      * @param scid   streamConnectionID（SETUP2 streams 里给出）
      */
     public MirrorReceiver(byte[] aeskey, long scid) throws Exception {
+        // scid 是 64 位无符号 UID；Java long 会把它读成负数，密钥串必须用无符号十进制
+        String scidStr = Long.toUnsignedString(scid);
         MessageDigest sha = MessageDigest.getInstance("SHA-512");
-        byte[] keyMaterial = ("AirPlayStreamKey" + scid).getBytes("US-ASCII");
+        byte[] keyMaterial = ("AirPlayStreamKey" + scidStr).getBytes("US-ASCII");
         sha.update(keyMaterial);
         sha.update(aeskey);
         videoKey = Arrays.copyOf(sha.digest(), 16);
         sha.reset();
-        byte[] ivMaterial = ("AirPlayStreamIV" + scid).getBytes("US-ASCII");
+        byte[] ivMaterial = ("AirPlayStreamIV" + scidStr).getBytes("US-ASCII");
         sha.update(ivMaterial);
         sha.update(aeskey);
         videoIv = Arrays.copyOf(sha.digest(), 16);
+        Log.i(TAG, "mirror key derived, scid=" + scidStr);
     }
 
     public void start() throws Exception {
+        sessionId = MirrorSession.get().beginSession();
         server = new ServerSocket(0); // 系统分配空闲端口
         port = server.getLocalPort();
         running = true;
@@ -76,7 +81,7 @@ public class MirrorReceiver {
                     client.close();
                 } catch (Exception ignored) {
                 }
-                MirrorSession.get().onStreamStopped();
+                MirrorSession.get().onStreamStopped(sessionId);
             }
         } catch (Exception e) {
             if (running) Log.e(TAG, "accept error", e);
@@ -88,6 +93,8 @@ public class MirrorReceiver {
         AesCtr ctr = new AesCtr(videoKey, videoIv);
         byte[] header = new byte[128];
         byte[] spsPps = null; // 待前置的 SPS/PPS（Annex-B）
+        int packets = 0;
+        int frames = 0;
 
         while (running) {
             if (!readFully(in, header, 0, 128)) break;
@@ -96,6 +103,11 @@ public class MirrorReceiver {
             int option = header[6] & 0xFF;
             byte[] payload = new byte[payloadSize];
             if (!readFully(in, payload, 0, payloadSize)) break;
+            if (packets < 8) {
+                Log.i(TAG, "pkt#" + (packets + 1) + " type=" + type + " size=" + payloadSize
+                        + " option=0x" + Integer.toHexString(option));
+            }
+            packets++;
 
             if (type == 0x00) {
                 // 加密视频帧：解密 + NAL 重组
@@ -105,14 +117,19 @@ public class MirrorReceiver {
                     Log.w(TAG, "invalid NAL payload size=" + payloadSize + "，解密可能失败");
                     continue;
                 }
-                if (spsPps != null) {
+                // 每个 IDR 都重新带上 SPS/PPS：页面/解码器晚启动、重启解码器时不会缺参数集
+                if (spsPps != null && containsIdr(annexb)) {
                     byte[] merged = new byte[spsPps.length + annexb.length];
                     System.arraycopy(spsPps, 0, merged, 0, spsPps.length);
                     System.arraycopy(annexb, 0, merged, spsPps.length, annexb.length);
                     annexb = merged;
-                    spsPps = null;
                 }
-                MirrorSession.get().onFrame(annexb);
+                frames++;
+                if (frames <= 3 || frames % 120 == 0) {
+                    Log.i(TAG, "frame#" + frames + " size=" + annexb.length
+                            + " key=" + containsIdr(annexb));
+                }
+                MirrorSession.get().onFrame(sessionId, annexb);
             } else if (type == 0x01) {
                 // 明文 SPS+PPS 包：宽高在头的 16/20（源）与 56/60（缩放后），LE float
                 int w = (int) leFloat(header, 56);
@@ -121,7 +138,7 @@ public class MirrorReceiver {
                     w = (int) leFloat(header, 16);
                     h = (int) leFloat(header, 20);
                 }
-                if (w > 0 && h > 0) MirrorSession.get().onConfig(w, h);
+                if (w > 0 && h > 0) MirrorSession.get().onConfig(sessionId, w, h);
                 if (option == 0x56 || option == 0x5e) {
                     Log.i(TAG, "stream suspend packet");
                     continue;
@@ -239,11 +256,29 @@ public class MirrorReceiver {
         return Float.intBitsToFloat(leInt(b, off));
     }
 
+    /** Annex-B 里是否含 IDR（nal_unit_type=5） */
+    private static boolean containsIdr(byte[] annexb) {
+        int i = 0;
+        while (i + 4 <= annexb.length) {
+            if (annexb[i] == 0 && annexb[i + 1] == 0
+                    && (annexb[i + 2] == 1 || (annexb[i + 2] == 0 && annexb[i + 3] == 1))) {
+                int sc = annexb[i + 2] == 1 ? 3 : 4;
+                int hdr = i + sc;
+                if (hdr < annexb.length && (annexb[hdr] & 0x1F) == 5) return true;
+                i = hdr + 1;
+            } else {
+                i++;
+            }
+        }
+        return false;
+    }
+
     public void stop() {
         running = false;
         try {
             if (server != null) server.close();
         } catch (Exception ignored) {
         }
+        MirrorSession.get().onStreamStopped(sessionId);
     }
 }

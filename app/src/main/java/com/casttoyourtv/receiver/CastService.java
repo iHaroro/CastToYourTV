@@ -195,7 +195,7 @@ public class CastService extends Service implements CastSession.Callback {
 
         if (airplay != null) airplay.stopActiveSessions();
         AudioSession.get().onStop();
-        MirrorSession.get().onStreamStopped();
+        MirrorSession.get().endSession();
         finishOtherPlayers(caller);
         updateNotification("投屏接收服务运行中");
         Log.i(TAG, "active cast stopped by viewer, receivers stay running");

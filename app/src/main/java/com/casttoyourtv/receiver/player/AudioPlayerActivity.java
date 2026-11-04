@@ -40,6 +40,18 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
     private View pulseDot;
     private android.app.Dialog controlPanel;
 
+    // 封面解码放到单线程里，且按 byte[] 引用做缓存：音量/曲名变化时不再重新解码导致闪图
+    private final java.util.concurrent.ExecutorService artworkLoader =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "artwork-decode");
+                t.setDaemon(true);
+                return t;
+            });
+    private volatile boolean destroyed;
+    private byte[] shownArtwork;
+    private int artworkGeneration;
+    private boolean placeholderShown = true;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable ticker = new Runnable() {
         @Override
@@ -214,15 +226,30 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
         }
 
         byte[] art = s.getArtwork();
-        if (art != null) {
-            Bitmap bmp = BitmapFactory.decodeByteArray(art, 0, art.length);
-            if (bmp != null) {
-                artworkView.setImageBitmap(bmp);
+        if (art != shownArtwork) {
+            shownArtwork = art;
+            final int generation = ++artworkGeneration;
+            if (art == null) {
+                if (!placeholderShown) {
+                    artworkView.setImageResource(android.R.drawable.ic_media_play);
+                    placeholderShown = true;
+                }
             } else {
-                artworkView.setImageResource(android.R.drawable.ic_media_play);
+                final byte[] data = art;
+                artworkLoader.execute(() -> {
+                    Bitmap bmp = null;
+                    try {
+                        bmp = BitmapFactory.decodeByteArray(data, 0, data.length);
+                    } catch (Throwable ignored) {
+                    }
+                    final Bitmap decoded = bmp;
+                    runOnUiThread(() -> {
+                        if (destroyed || generation != artworkGeneration || decoded == null) return;
+                        artworkView.setImageBitmap(decoded);
+                        placeholderShown = false;
+                    });
+                });
             }
-        } else {
-            artworkView.setImageResource(android.R.drawable.ic_media_play);
         }
 
         float db = s.getVolumeDb();
@@ -283,6 +310,8 @@ public class AudioPlayerActivity extends Activity implements AudioSession.Listen
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        artworkLoader.shutdownNow();
         handler.removeCallbacks(ticker);
         AudioSession.get().setListener(null);
         if (instance == this) instance = null;

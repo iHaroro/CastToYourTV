@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -29,6 +30,10 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
 
     private static final String TAG = "MirrorActivity";
     private static volatile MirrorActivity instance;
+    /** 1080p 关键帧可能到几 MB，不设上限会被 MediaCodec 默认缓冲区丢弃。 */
+    private static final int MAX_INPUT_SIZE = 4 * 1024 * 1024;
+    /** 已在解码但没有输出帧超过该时长，重建解码器。 */
+    private static final long DECODE_STALL_MS = 4000;
 
     private SurfaceView surfaceView;
     private TextView statusView;
@@ -97,21 +102,47 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void decodeLoop(SurfaceHolder holder) {
+        int restarts = 0;
+        while (running) {
+            boolean restart = decodeOnce(holder);
+            if (!running) break;
+            if (restart) {
+                restarts++;
+                Log.w(TAG, "decoder stalled, restart #" + restarts);
+                // 重建后必须从 IDR 开始，否则一路解 P 帧还是黑屏
+                MirrorSession.get().dropUntilKeyframe();
+            }
+        }
+    }
+
+    /** @return true 表示解码器卡住，需要重建 */
+    private boolean decodeOnce(SurfaceHolder holder) {
+        MediaCodec decoder = null;
         try {
-            codec = MediaCodec.createDecoderByType("video/avc");
+            decoder = MediaCodec.createDecoderByType("video/avc");
+            codec = decoder;
             MediaFormat fmt = MediaFormat.createVideoFormat("video/avc", 1280, 720);
+            fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE);
             // 低延迟模式（支持的设备上减少排队延迟）
             try {
                 fmt.setInteger("low-latency", 1);
             } catch (Exception ignored) {
             }
-            codec.configure(fmt, holder.getSurface(), null, 0);
-            codec.start();
+            decoder.configure(fmt, holder.getSurface(), null, 0);
+            decoder.start();
+            Log.i(TAG, "decoder started: " + decoder.getName()
+                    + " surfaceValid=" + holder.getSurface().isValid());
 
-            boolean sizeApplied = false;
+            int appliedW = -1;
+            int appliedH = -1;
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            int queued = 0;
+            int rendered = 0;
+            int inputMiss = 0;
+            long startedAt = SystemClock.elapsedRealtime();
+            long lastOutputAt = startedAt;
             while (running) {
-                MirrorSession.Frame frame = MirrorSession.get().pollFrame(500);
+                MirrorSession.Frame frame = MirrorSession.get().pollFrame(200);
                 if (frame == null) {
                     if (!MirrorSession.get().isStreaming()) {
                         // 流已停，退出页面
@@ -119,32 +150,65 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
                         runOnUiThread(this::finish);
                         break;
                     }
+                    if (queued > 5 && SystemClock.elapsedRealtime() - lastOutputAt > DECODE_STALL_MS) {
+                        return true;
+                    }
                     continue;
                 }
-                if (!sizeApplied && MirrorSession.get().getWidth() > 0) {
-                    sizeApplied = true;
+                int vw = MirrorSession.get().getWidth();
+                int vh = MirrorSession.get().getHeight();
+                if (vw > 0 && vh > 0 && (vw != appliedW || vh != appliedH)) {
+                    appliedW = vw;
+                    appliedH = vh;
                     runOnUiThread(() -> {
-                        applyAspect(MirrorSession.get().getWidth(), MirrorSession.get().getHeight());
+                        applyAspect(vw, vh);
                         statusView.setVisibility(View.GONE);
                     });
                 }
-                int idx = codec.dequeueInputBuffer(10000);
-                if (idx >= 0) {
-                    ByteBuffer buf = codec.getInputBuffer(idx);
-                    if (buf == null) continue;
-                    buf.clear();
-                    if (buf.remaining() < frame.data.length) {
-                        Log.w(TAG, "input buffer too small: " + buf.remaining() + " < " + frame.data.length);
-                        continue;
-                    }
-                    buf.put(frame.data);
-                    codec.queueInputBuffer(idx, 0, frame.data.length,
-                            System.nanoTime() / 1000, 0);
+                int idx = -1;
+                for (int attempt = 0; attempt < 3 && idx < 0 && running; attempt++) {
+                    idx = decoder.dequeueInputBuffer(10000);
                 }
-                int outIdx = codec.dequeueOutputBuffer(info, 0);
+                if (idx >= 0) {
+                    ByteBuffer buf = decoder.getInputBuffer(idx);
+                    if (buf != null && buf.capacity() >= frame.data.length) {
+                        buf.clear();
+                        buf.put(frame.data);
+                        decoder.queueInputBuffer(idx, 0, frame.data.length,
+                                System.nanoTime() / 1000, 0);
+                        queued++;
+                        if (queued == 1) {
+                            Log.i(TAG, "first frame queued size=" + frame.data.length
+                                    + " inputCap=" + buf.capacity());
+                        }
+                    } else {
+                        Log.w(TAG, "input buffer too small: "
+                                + (buf == null ? -1 : buf.capacity()) + " < " + frame.data.length);
+                        decoder.queueInputBuffer(idx, 0, 0, 0, 0);
+                    }
+                } else if (inputMiss < 3) {
+                    inputMiss++;
+                    Log.w(TAG, "dequeueInputBuffer returned " + idx);
+                }
+                int outIdx = decoder.dequeueOutputBuffer(info, 0);
                 while (outIdx >= 0) {
-                    codec.releaseOutputBuffer(outIdx, true);
-                    outIdx = codec.dequeueOutputBuffer(info, 0);
+                    decoder.releaseOutputBuffer(outIdx, true);
+                    rendered++;
+                    lastOutputAt = SystemClock.elapsedRealtime();
+                    outIdx = decoder.dequeueOutputBuffer(info, 0);
+                }
+                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    Log.i(TAG, "output format changed: " + decoder.getOutputFormat());
+                }
+                if (rendered == 1) {
+                    Log.i(TAG, "first frame rendered");
+                } else if (rendered > 0 && rendered % 120 == 0) {
+                    Log.i(TAG, "frames rendered=" + rendered + " queued=" + queued);
+                }
+                if (rendered == 0 && queued > 5
+                        && SystemClock.elapsedRealtime() - startedAt > DECODE_STALL_MS) {
+                    Log.w(TAG, "no output frame after " + queued + " frames, restarting decoder");
+                    return true;
                 }
             }
         } catch (Exception e) {
@@ -152,14 +216,15 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
             runOnUiThread(() -> statusView.setText("镜像解码失败: " + e.getMessage()));
         } finally {
             try {
-                if (codec != null) {
-                    codec.stop();
-                    codec.release();
+                if (decoder != null) {
+                    decoder.stop();
+                    decoder.release();
                 }
             } catch (Exception ignored) {
             }
             codec = null;
         }
+        return false;
     }
 
     /** 按视频宽高比把 SurfaceView 缩放适配屏幕（居中等比，黑边） */
@@ -206,7 +271,7 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onDestroy() {
         stopDecoding();
-        MirrorSession.get().reset();
+        // 不在这里清空 MirrorSession：旧页面销毁可能晚于新会话开始，会把新会话的帧清掉
         if (instance == this) instance = null;
         super.onDestroy();
     }

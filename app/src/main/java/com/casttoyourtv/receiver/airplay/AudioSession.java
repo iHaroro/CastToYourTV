@@ -108,12 +108,16 @@ public final class AudioSession {
     }
 
     public synchronized void setArtwork(byte[] data) {
-        if (artwork != null && java.util.Arrays.equals(artwork, data)) return;
+        if (data == null || data.length == 0) return;
+        if (artwork != null) {
+            if (artwork.length == data.length && java.util.Arrays.equals(artwork, data)) return;
+        }
         artwork = data;
         notifyChanged();
     }
 
     public synchronized void setVolume(float db) {
+        if (Math.abs(db - volumeDb) < 0.05f) return;
         volumeDb = db;
         notifyChanged();
     }

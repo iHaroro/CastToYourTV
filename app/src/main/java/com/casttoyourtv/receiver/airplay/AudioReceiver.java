@@ -1,6 +1,7 @@
 package com.casttoyourtv.receiver.airplay;
 
 import android.util.Log;
+import android.os.Process;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -31,7 +32,7 @@ public class AudioReceiver {
     private Thread controlThread;
     private volatile boolean running;
 
-    private int lastSequence = -1;
+    private volatile int lastSequence = -1;
     private long packetsIn;
     private long packetsDropped;
 
@@ -66,6 +67,7 @@ public class AudioReceiver {
     }
 
     private void loop(DatagramSocket socket, boolean control) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
         Cipher cipher;
         try {
             cipher = Cipher.getInstance("AES/CBC/NoPadding");
@@ -99,9 +101,14 @@ public class AudioReceiver {
         }
     }
 
-    private void handleAudio(Cipher cipher, byte[] packet, int offset, int length) {
+    private synchronized void handleAudio(Cipher cipher, byte[] packet, int offset, int length) {
         int sequence = ((packet[offset + 2] & 0xFF) << 8) | (packet[offset + 3] & 0xFF);
-        if (sequence == lastSequence) return; // AAC-ELD 会重复发包，去重
+        // RTP 环形序号：只接受比上一包新的序号，重复与迟到的重传包都丢弃，
+        // 否则乱序包会插进播放序列造成爆音
+        if (lastSequence != -1) {
+            int diff = (sequence - lastSequence) & 0xFFFF;
+            if (diff == 0 || diff > 0x7FFF) return;
+        }
         lastSequence = sequence;
 
         byte[] payload = new byte[length - 12];

@@ -263,6 +263,15 @@ public class RtspListener {
         Object streamsObj = root.get("streams");
         if (streamsObj instanceof java.util.List) {
             Bplist.Arr respStreams = new Bplist.Arr();
+            // 先收集本 SETUP 的流类型：同一 SETUP 同时含 110(镜像视频) 与 96(音频)
+            // 时，整体属于屏幕镜像会话，与数组顺序无关
+            boolean setupHasMirror = false;
+            for (Object item : (java.util.List<?>) streamsObj) {
+                if (!(item instanceof Map)) continue;
+                Object typeObj = ((Map<?, ?>) item).get("type");
+                long itemType = typeObj instanceof Number ? ((Number) typeObj).longValue() : -1;
+                if (itemType == 110) setupHasMirror = true;
+            }
             for (Object item : (java.util.List<?>) streamsObj) {
                 if (!(item instanceof Map)) continue;
                 Map<?, ?> stream = (Map<?, ?>) item;
@@ -297,6 +306,9 @@ public class RtspListener {
                         int ct = ctObj instanceof Number ? ((Number) ctObj).intValue() : 0;
                         int spf = spfObj instanceof Number ? ((Number) spfObj).intValue() : 0;
                         boolean usingScreen = Boolean.TRUE.equals(usingScreenObj);
+                        // 镜像伴音：usingScreen 声明、AAC-ELD(ct=8) 编码，
+                        // 或同一 SETUP 里带有 110 镜像视频流
+                        boolean mirrorAudio = usingScreen || ct == 8 || setupHasMirror;
                         if (p.aeskey == null || p.eiv == null) {
                             Log.e(TAG, "SETUP audio without aeskey/eiv");
                             continue;
@@ -330,8 +342,14 @@ public class RtspListener {
                         Log.i(TAG, "SETUP audio: ct=" + ct + " spf=" + spf
                                 + " dataPort=" + p.audio.getDataPort()
                                 + " controlPort=" + p.audio.getControlPort());
-                        AudioSession.get().onStart();
-                        callback.onAudioStart();
+                        if (mirrorAudio) {
+                            // 只建音频链路，不激活音乐模式、不关镜像页、不清音乐元数据
+                            Log.i(TAG, "SETUP mirror audio: keep MIRROR mode"
+                                    + " usingScreen=" + usingScreen + " ct=" + ct);
+                        } else {
+                            AudioSession.get().onStart();
+                            callback.onAudioStart();
+                        }
                     } catch (Exception e) {
                         Log.e(TAG, "SETUP audio failed", e);
                     }

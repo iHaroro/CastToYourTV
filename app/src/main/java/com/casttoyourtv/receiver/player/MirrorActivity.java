@@ -7,6 +7,7 @@ import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -38,6 +39,12 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
     private SurfaceView surfaceView;
     private TextView statusView;
     private volatile boolean running;
+    /** 画面 Surface 是否存在；Home 后为 false，解码线程继续跑但不渲染 */
+    private volatile boolean rendering;
+    /** 回台后待切换的新 Surface，由解码线程消费 */
+    private volatile Surface pendingSurface;
+    /** 解码器当前绑定的 Surface */
+    private volatile Surface renderSurface;
     private Thread decodeThread;
     private MediaCodec codec;
     private android.app.Dialog controlPanel;
@@ -82,7 +89,17 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
-        startDecoding(holder);
+        Surface surface = holder.getSurface();
+        rendering = true;
+        if (decodeThread == null || !decodeThread.isAlive()) {
+            renderSurface = surface;
+            pendingSurface = null;
+            running = true;
+            decodeThread = new Thread(() -> decodeLoop(), "mirror-decode");
+            decodeThread.start();
+        } else {
+            pendingSurface = surface;
+        }
     }
 
     @Override
@@ -91,20 +108,16 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        stopDecoding();
+        // 关键：只停靠渲染，不释放解码器。iPhone 镜像流只在开头发 IDR，
+        // 解码器一旦重建就会因缺少参考帧而黑屏，必须保持全程存活
+        rendering = false;
+        Log.i(TAG, "surface destroyed, decoder parked");
     }
 
-    private void startDecoding(SurfaceHolder holder) {
-        stopDecoding();
-        running = true;
-        decodeThread = new Thread(() -> decodeLoop(holder), "mirror-decode");
-        decodeThread.start();
-    }
-
-    private void decodeLoop(SurfaceHolder holder) {
+    private void decodeLoop() {
         int restarts = 0;
         while (running) {
-            boolean restart = decodeOnce(holder);
+            boolean restart = decodeOnce();
             if (!running) break;
             if (restart) {
                 restarts++;
@@ -116,9 +129,20 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /** @return true 表示解码器卡住，需要重建 */
-    private boolean decodeOnce(SurfaceHolder holder) {
+    private boolean decodeOnce() {
         MediaCodec decoder = null;
         try {
+            Surface incoming = pendingSurface;
+            if (incoming != null) {
+                pendingSurface = null;
+                renderSurface = incoming;
+            }
+            Surface surface = renderSurface;
+            if (surface == null || !surface.isValid()) {
+                Log.w(TAG, "decodeOnce without valid surface, waiting");
+                SystemClock.sleep(200);
+                return false;
+            }
             decoder = MediaCodec.createDecoderByType("video/avc");
             codec = decoder;
             MediaFormat fmt = MediaFormat.createVideoFormat("video/avc", 1280, 720);
@@ -128,20 +152,33 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
                 fmt.setInteger("low-latency", 1);
             } catch (Exception ignored) {
             }
-            decoder.configure(fmt, holder.getSurface(), null, 0);
+            decoder.configure(fmt, surface, null, 0);
             decoder.start();
             Log.i(TAG, "decoder started: " + decoder.getName()
-                    + " surfaceValid=" + holder.getSurface().isValid());
+                    + " surfaceValid=" + surface.isValid());
 
             int appliedW = -1;
             int appliedH = -1;
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             int queued = 0;
+            int decoded = 0;
             int rendered = 0;
             int inputMiss = 0;
             long startedAt = SystemClock.elapsedRealtime();
             long lastOutputAt = startedAt;
             while (running) {
+                Surface next = pendingSurface;
+                if (next != null) {
+                    pendingSurface = null;
+                    renderSurface = next;
+                    try {
+                        decoder.setOutputSurface(next);
+                        Log.i(TAG, "output surface switched on resume");
+                    } catch (Exception e) {
+                        Log.w(TAG, "setOutputSurface failed, recreate decoder", e);
+                        return true;
+                    }
+                }
                 MirrorSession.Frame frame = MirrorSession.get().pollFrame(200);
                 if (frame == null) {
                     if (!MirrorSession.get().isStreaming()) {
@@ -192,9 +229,16 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
                 }
                 int outIdx = decoder.dequeueOutputBuffer(info, 0);
                 while (outIdx >= 0) {
-                    decoder.releaseOutputBuffer(outIdx, true);
-                    rendered++;
+                    decoded++;
                     lastOutputAt = SystemClock.elapsedRealtime();
+                    // pendingSurface 非空说明正处于回台切换窗口：
+                    // 旧 Surface 已被 SurfaceView 废弃，此时渲染会让解码器进入错误态
+                    boolean canRender = rendering && renderSurface != null
+                            && pendingSurface == null && renderSurface.isValid();
+                    decoder.releaseOutputBuffer(outIdx, canRender);
+                    if (canRender) {
+                        rendered++;
+                    }
                     outIdx = decoder.dequeueOutputBuffer(info, 0);
                 }
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -202,10 +246,11 @@ public class MirrorActivity extends Activity implements SurfaceHolder.Callback {
                 }
                 if (rendered == 1) {
                     Log.i(TAG, "first frame rendered");
-                } else if (rendered > 0 && rendered % 120 == 0) {
-                    Log.i(TAG, "frames rendered=" + rendered + " queued=" + queued);
+                } else if (decoded > 0 && decoded % 120 == 0) {
+                    Log.i(TAG, "frames decoded=" + decoded
+                            + " rendered=" + rendered + " queued=" + queued);
                 }
-                if (rendered == 0 && queued > 5
+                if (decoded == 0 && queued > 5
                         && SystemClock.elapsedRealtime() - startedAt > DECODE_STALL_MS) {
                     Log.w(TAG, "no output frame after " + queued + " frames, restarting decoder");
                     return true;

@@ -6,10 +6,12 @@ import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.os.Process;
 import android.util.Log;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AirPlay 音频解码播放：ALAC（无损，音乐投放默认）用内置解码器，
@@ -29,6 +31,10 @@ public class AudioRenderer {
 
     private final int compressionType; // 1=PCM 2=ALAC 4=AAC-LC 8=AAC-ELD
     private final int samplesPerFrame;
+    private final boolean lowLatency;
+    /** 镜像伴音播放前的预缓冲帧数；音乐投屏保持 0（不改变已验证路径） */
+    private final int preBufferFrames;
+    private boolean primed;
 
     private AudioTrack track;
     private MediaCodec codec;
@@ -41,13 +47,16 @@ public class AudioRenderer {
     public AudioRenderer(int compressionType, int samplesPerFrame, boolean lowLatency) {
         this.compressionType = compressionType;
         this.samplesPerFrame = samplesPerFrame;
+        this.lowLatency = lowLatency;
         int frameMs = Math.max(1, (samplesPerFrame > 0 ? samplesPerFrame : 352) * 1000 / SAMPLE_RATE);
         // 音乐容忍深缓冲，镜像伴音要低延迟
         this.queueLimit = lowLatency ? Math.max(4, 150 / frameMs) : Math.max(64, 4000 / frameMs);
+        this.preBufferFrames = lowLatency ? 8 : 0;
     }
 
     public synchronized void start() {
         running = true;
+        primed = false;
         queue.clear();
         thread = new Thread(this::loop, "airplay-audio-play");
         thread.setDaemon(true);
@@ -69,14 +78,32 @@ public class AudioRenderer {
     }
 
     private void loop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
         try {
             openOutput();
             openDecoder();
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             byte[] pcm = new byte[16384];
             while (running) {
-                byte[] frame = queue.poll();
+                byte[] frame;
+                if (preBufferFrames > 0 && !primed) {
+                    // 预缓冲：先把抖动吸收掉再开声，避免 AudioTrack 反复 underrun
+                    frame = queue.peek();
+                    if (frame == null || queue.size() < preBufferFrames) {
+                        drainCodec(info, pcm, 2000);
+                        continue;
+                    }
+                    frame = queue.poll();
+                    primed = true;
+                } else {
+                    try {
+                        frame = queue.poll(5, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
                 if (frame == null) {
+                    if (preBufferFrames > 0) primed = false;
                     drainCodec(info, pcm, 0);
                     continue;
                 }
@@ -102,7 +129,8 @@ public class AudioRenderer {
     private void openOutput() {
         int min = AudioTrack.getMinBufferSize(SAMPLE_RATE,
                 AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
-        int size = Math.max(min * 3 / 2, 8192);
+        // 镜像伴音用大缓冲换流畅：min*4 约 250~400ms，WiFi 抖动不再直接打空
+        int size = lowLatency ? Math.max(min * 4, 32768) : Math.max(min * 3 / 2, 8192);
         size -= size % 4;
         track = new AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE,
                 AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT,
